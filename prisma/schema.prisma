@@ -1,0 +1,430 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ──────────────────────────────────────────────
+
+enum UserRole {
+  VOLUNTEER
+  ETS_ADMIN
+  CERT_ISSUER  // Can attest official certifications for volunteers
+  PLATFORM_ADMIN
+}
+
+enum BadgeCategory {
+  PRESENCE
+  SKILL
+  SPECIAL
+  CERTIFICATION // Official certifications (AREU, CRI, ANPAS, Misericordie, etc.)
+}
+
+enum ClaimStatus {
+  PENDING
+  CLAIMED
+  EXPIRED
+  REVOKED
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+enum MintStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+// ─── MODELS ─────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  walletAddress String    @unique
+  email         String?   @unique
+  displayName   String?
+  role          UserRole  @default(VOLUNTEER)
+  hashedId      String    @unique // keccak256 hash used on-chain
+  gdprConsentAt DateTime?
+  gdprConsentIp String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  isActive      Boolean   @default(true)
+
+  volunteer     Volunteer?
+  etsAdmin      ETSAdmin?
+  notifications Notification[]
+  certIssuedMints MintedBadge[] @relation("CertIssuerMints")
+
+  @@index([walletAddress])
+  @@index([email])
+  @@map("users")
+}
+
+model Volunteer {
+  id            String      @id @default(cuid())
+  userId        String      @unique
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  associationId String?
+  association   Association? @relation(fields: [associationId], references: [id])
+
+  totalHours  Decimal @default(0) @db.Decimal(10, 2)
+  totalShifts Int     @default(0)
+
+  activityLogs ActivityLog[]
+  badgeClaims  BadgeClaim[]
+  mintedBadges MintedBadge[]
+  qrTokens     QRToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("volunteers")
+}
+
+model Association {
+  id            String  @id @default(cuid())
+  name          String
+  fiscalCode    String  @unique // Codice Fiscale
+  city          String
+  province      String
+  region        String
+  webhookSecret String  // HMAC secret for validating webhooks
+  isActive      Boolean @default(true)
+
+  // Integration source(s) — which platform(s) feed data to CivicWallet
+  integrationSourceId String?
+  integrationSource   IntegrationSource? @relation(fields: [integrationSourceId], references: [id])
+  externalId          String? // ID of this association in the external system
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  volunteers   Volunteer[]
+  etsAdmins    ETSAdmin[]
+  activityLogs ActivityLog[]
+
+  @@index([integrationSourceId])
+  @@map("associations")
+}
+
+model ETSAdmin {
+  id            String      @id @default(cuid())
+  userId        String      @unique
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  associationId String
+  association   Association @relation(fields: [associationId], references: [id])
+  canMint       Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+
+  @@map("ets_admins")
+}
+
+model Merchant {
+  id           String  @id @default(cuid())
+  userId       String  @unique
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessName String
+  vatNumber    String  @unique // Partita IVA
+  city         String
+  province     String
+  category     String  // e.g., "restaurant", "shop", "gym"
+  isActive     Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  discountRules DiscountRule[]
+  redemptions   Redemption[]
+
+  @@map("merchants")
+}
+
+model BadgeType {
+  id            String        @id @default(cuid())
+  tokenId       Int           @unique // On-chain ERC-1155 token ID
+  name          String
+  nameIt        String        // Italian name
+  description   String
+  descriptionIt String        // Italian description
+  category      BadgeCategory
+  imageUrl      String
+  hoursRequired Decimal?      @db.Decimal(10, 2) // null for non-presence badges
+  isActive      Boolean       @default(true)
+  sortOrder     Int           @default(0)
+
+  // ── Certification-specific fields (null for non-certification badges) ──
+  certificationTypeId String?          // FK to dynamic CertificationType registry
+  certificationType   CertificationType? @relation(fields: [certificationTypeId], references: [id])
+  issuerOrganization  String?          // e.g. "AREU", "CRI", "ANPAS"
+  courseHours         Int?             // Duration of the course in hours
+  isRenewable         Boolean          @default(false) // e.g. BLSD expires
+  renewalMonths       Int?             // Months until renewal needed
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  claims        BadgeClaim[]
+  mintedBadges  MintedBadge[]
+  discountRules DiscountRule[]
+
+  @@index([category])
+  @@index([certificationTypeId])
+  @@map("badge_types")
+}
+
+model ActivityLog {
+  id            String      @id @default(cuid())
+  volunteerId   String
+  volunteer     Volunteer   @relation(fields: [volunteerId], references: [id])
+  associationId String
+  association   Association @relation(fields: [associationId], references: [id])
+
+  shiftDate    DateTime
+  hoursWorked  Decimal  @db.Decimal(5, 2)
+  activityType String   // e.g., "transport", "logistics", "training"
+  description  String?
+  externalRef  String?  // Reference ID from AppAmbulanza
+  webhookLogId String?
+
+  createdAt DateTime @default(now())
+
+  webhookLog WebhookLog? @relation(fields: [webhookLogId], references: [id])
+
+  @@index([volunteerId])
+  @@index([associationId])
+  @@index([shiftDate])
+  @@map("activity_logs")
+}
+
+model BadgeClaim {
+  id            String      @id @default(cuid())
+  volunteerId   String
+  volunteer     Volunteer   @relation(fields: [volunteerId], references: [id])
+  badgeTypeId   String
+  badgeType     BadgeType   @relation(fields: [badgeTypeId], references: [id])
+  status        ClaimStatus @default(PENDING)
+  triggerReason String      // e.g., "hours_milestone_15", "manual_admin", "skill_certified"
+  expiresAt     DateTime?
+  claimedAt     DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  mintedBadge MintedBadge?
+
+  @@unique([volunteerId, badgeTypeId])
+  @@index([status])
+  @@map("badge_claims")
+}
+
+model MintedBadge {
+  id              String     @id @default(cuid())
+  volunteerId     String
+  volunteer       Volunteer  @relation(fields: [volunteerId], references: [id])
+  badgeTypeId     String
+  badgeType       BadgeType  @relation(fields: [badgeTypeId], references: [id])
+  claimId         String     @unique
+  claim           BadgeClaim @relation(fields: [claimId], references: [id])
+
+  walletAddress   String
+  transactionHash String?
+  mintStatus      MintStatus @default(PENDING)
+  onChainTokenId  Int
+  mintedAt        DateTime?
+  errorMessage    String?
+
+  // ── Certification attestation fields ──
+  certDocumentHash String?   // keccak256 hash of the original certificate document
+  certIssuedAt     DateTime? // when the cert was originally issued by the ente
+  certExpiresAt    DateTime? // expiry date (e.g. BLSD every 2 years)
+  certIssuerId     String?   // userId of the CERT_ISSUER who attested
+  certIssuer       User?     @relation("CertIssuerMints", fields: [certIssuerId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([volunteerId, badgeTypeId])
+  @@index([walletAddress])
+  @@index([transactionHash])
+  @@index([certExpiresAt])
+  @@map("minted_badges")
+}
+
+model WebhookLog {
+  id              String        @id @default(cuid())
+  source          String        // "appambulanza", "gaia_cri", "bernardo", etc.
+  endpoint        String
+  payload         Json
+  headers         Json?
+  hmacValid       Boolean
+  status          WebhookStatus @default(RECEIVED)
+  processingError String?
+  processedAt     DateTime?
+
+  // Link to the integration source that sent this webhook
+  integrationSourceId String?
+  integrationSource   IntegrationSource? @relation(fields: [integrationSourceId], references: [id])
+
+  createdAt       DateTime      @default(now())
+
+  activityLogs ActivityLog[]
+
+  @@index([source])
+  @@index([status])
+  @@index([createdAt])
+  @@index([integrationSourceId])
+  @@map("webhook_logs")
+}
+
+model Notification {
+  id       String    @id @default(cuid())
+  userId   String
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title    String
+  body     String
+  type     String    // "badge_available", "badge_minted", "discount_new"
+  metadata Json?
+  readAt   DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+model DiscountRule {
+  id              String    @id @default(cuid())
+  merchantId      String
+  merchant        Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  badgeTypeId     String
+  badgeType       BadgeType @relation(fields: [badgeTypeId], references: [id])
+  discountPercent Int       // e.g., 10 for 10%
+  description     String
+  descriptionIt   String
+  validFrom       DateTime  @default(now())
+  validUntil      DateTime?
+  maxRedemptions  Int?      // null = unlimited
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  redemptions Redemption[]
+
+  @@map("discount_rules")
+}
+
+model Redemption {
+  id             String       @id @default(cuid())
+  discountRuleId String
+  discountRule   DiscountRule @relation(fields: [discountRuleId], references: [id])
+  merchantId     String
+  merchant       Merchant     @relation(fields: [merchantId], references: [id])
+  volunteerWallet String
+  redeemedAt     DateTime     @default(now())
+
+  @@index([merchantId])
+  @@index([volunteerWallet])
+  @@map("redemptions")
+}
+
+model QRToken {
+  id          String    @id @default(cuid())
+  volunteerId String
+  volunteer   Volunteer @relation(fields: [volunteerId], references: [id])
+  token       String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([token])
+  @@index([expiresAt])
+  @@map("qr_tokens")
+}
+
+// ─── DYNAMIC CERTIFICATION REGISTRY ─────────────────────
+// Allows unlimited certification types to be created at runtime
+// by PLATFORM_ADMIN without code changes. Each CertificationType
+// maps to a BadgeType with category=CERTIFICATION.
+
+model CertificationType {
+  id                String  @id @default(cuid())
+  code              String  @unique // e.g. "CRI_BLSD_ADULTO", "AREU_SSE_120"
+  name              String  // e.g. "BLSD Adulto"
+  nameIt            String
+  description       String
+  descriptionIt     String
+  issuerOrganization String // e.g. "CRI", "AREU", "ANPAS", "MISERICORDIE"
+  courseArea         String // e.g. "Salute", "Emergenza", "DIU", "Motorizzazione"
+  courseHours        Int?   // Duration in hours (null if variable)
+  isRenewable        Boolean @default(false)
+  renewalMonths      Int?   // null if not renewable
+  requiresExam       Boolean @default(true)
+  level              String? // e.g. "base", "avanzato", "specializzazione"
+  prerequisites      String? // Human-readable prerequisites
+  isActive           Boolean @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  badgeTypes BadgeType[]
+
+  @@index([issuerOrganization])
+  @@index([courseArea])
+  @@map("certification_types")
+}
+
+// ─── INTEGRATION HUB ─────────────────────────────────────
+// Dynamic registry of external platforms that feed data to
+// CivicWallet. Each source has its own adapter config,
+// auth method, and payload mapping. New sources are added
+// at runtime without code changes.
+
+model IntegrationSource {
+  id              String  @id @default(cuid())
+  code            String  @unique // e.g. "appambulanza", "gaia_cri", "bernardo"
+  name            String  // Human-readable, e.g. "GAIA - Croce Rossa Italiana"
+  description     String?
+  platform        String  // e.g. "appambulanza", "gaia", "bernardo", "anpasoft", "volontapp", "sinfoniaweb", "custom"
+  organization    String  // e.g. "CRI", "ANPAS", "MISERICORDIE", "FAPS", "custom"
+
+  // Connection mode
+  mode            String  @default("webhook") // "webhook" | "api_pull" | "api_push" | "file_import"
+
+  // Authentication
+  authType        String  @default("hmac") // "hmac" | "api_key" | "oauth2" | "bearer" | "none"
+  authSecret      String? // HMAC secret, API key, or encrypted OAuth credentials
+  authConfig      Json?   // Additional auth config (e.g. OAuth endpoints, scopes)
+
+  // Adapter configuration — how to map external payload to CivicWallet schema
+  fieldMapping    Json?   // Maps external field names to internal ones
+  // Example: { "volunteer_id": "externalRef", "hours": "hoursWorked", "date": "shiftDate" }
+
+  // Endpoints (for API pull mode)
+  baseUrl         String? // e.g. "https://gaia.cri.it/api/v1"
+  endpoints       Json?   // e.g. { "shifts": "/shifts", "volunteers": "/volunteers" }
+
+  // Rate limiting & sync
+  syncIntervalMin Int?    // Minutes between sync (for api_pull mode)
+  lastSyncAt      DateTime?
+  rateLimitPerMin Int     @default(60)
+
+  // Status
+  isActive        Boolean @default(true)
+  isVerified      Boolean @default(false) // Platform admin has verified the integration
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  associations Association[]
+  webhookLogs  WebhookLog[]
+
+  @@index([platform])
+  @@index([organization])
+  @@map("integration_sources")
+}
+
+
