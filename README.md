@@ -36,7 +36,7 @@ CivicWallet è un **middleware invisibile** che si integra con i gestionali esis
 
 ```bash
 # Clona il repository
-git clone https://github.com/obors/civicwallet.git
+git clone https://github.com/santranitaly-art/civicwallet.git
 cd civicwallet
 
 # Installa le dipendenze
