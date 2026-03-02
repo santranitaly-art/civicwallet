@@ -1,12 +1,12 @@
-# CivicWallet — Setup Database PostgreSQL su VPS Aruba
+# CivicWallet — Setup Database PostgreSQL su VPS
 
-Questo documento guida la creazione del database CivicWallet sul VPS Aruba esistente, co-locato con AppAmbulanza (GestioneModelloSaaS).
+Questo documento guida la creazione del database CivicWallet su un VPS dedicato.
 
 ---
 
 ## 1. Prerequisiti
 
-Il VPS Aruba ha già PostgreSQL 16 in esecuzione (Docker o nativo).
+Il VPS deve avere PostgreSQL 16 in esecuzione (Docker o nativo).
 
 Verifica che sia attivo:
 ```bash
@@ -24,7 +24,7 @@ docker ps | grep postgres
 Accedi al VPS via SSH e crea il database dedicato a CivicWallet:
 
 ```bash
-ssh root@80.211.137.124
+ssh root@<YOUR_VPS_IP>
 ```
 
 Connettiti a PostgreSQL con l'utente admin:
@@ -122,7 +122,7 @@ host    civicwallet_db   civicwallet_user  127.0.0.1/32    scram-sha-256
 ```
 
 ### 5.3 Backup
-I backup di AppAmbulanza (giornalieri alle 03:00) possono essere estesi per includere CivicWallet:
+Per i backup giornalieri, aggiungere CivicWallet al cron esistente:
 ```bash
 # Aggiungere al cron di backup esistente:
 pg_dump -U civicwallet_user civicwallet_db | gzip > /backups/civicwallet_$(date +%Y%m%d).sql.gz
@@ -130,14 +130,14 @@ pg_dump -U civicwallet_user civicwallet_db | gzip > /backups/civicwallet_$(date 
 
 ---
 
-## 6. Vantaggio Co-Location con AppAmbulanza
+## 6. Vantaggio Co-Location
 
-Poiché CivicWallet e AppAmbulanza condividono il VPS:
+Se CivicWallet e il backend condividono lo stesso server:
 
-- I **webhook** tra AppAmbulanza → CivicWallet viaggiano su **localhost** (nessun transito Internet).
+- I **webhook** viaggiano su **localhost** (nessun transito Internet).
 - La latenza è **< 1ms** invece dei tipici 50-200ms di una chiamata HTTPS esterna.
 - Zero costi di traffico dati tra i servizi.
-- Un solo vendor (Aruba S.p.A., GDPR-compliant) per entrambi i DB.
+- Un solo vendor (UE, GDPR-compliant) per entrambi i DB.
 
 ---
 

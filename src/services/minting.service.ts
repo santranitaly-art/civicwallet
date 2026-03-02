@@ -3,6 +3,7 @@ import { privateKeyToAccount } from "thirdweb/wallets";
 import { prisma } from "@/lib/prisma";
 import { getCivicBadgeContract, getClient } from "@/lib/thirdweb";
 import { NotFoundError, AppError } from "@/lib/errors";
+import { isShadowMode, getCivicWalletMode } from "@/lib/config";
 import { createNotification } from "./notification.service";
 
 // The server-side admin wallet used to submit mint transactions.
@@ -75,6 +76,28 @@ export async function mintBadgeOnChain(mintedBadgeId: string): Promise<{
     where: { id: mintedBadgeId },
     data: { mintStatus: "SUBMITTED" },
   });
+
+  // ─── SHADOW MODE GUARD ────────────────────────────────────────────
+  // In shadow mode we validate everything but skip the actual on-chain
+  // transaction.  The MintedBadge stays in SUBMITTED so it can be
+  // retried when switching to active mode.
+  if (isShadowMode()) {
+    console.info(
+      `[minting.service] 🌑 SHADOW MODE (${getCivicWalletMode()}) — would mint ` +
+      `token #${mintedBadge.onChainTokenId} to ${mintedBadge.walletAddress} ` +
+      `(badge: ${mintedBadge.badgeType.nameIt || mintedBadge.badgeType.name}). ` +
+      `Skipping on-chain tx. MintedBadge ${mintedBadgeId} left as SUBMITTED.`,
+    );
+    // Revert to PENDING so it can be picked up when mode switches to active
+    await prisma.mintedBadge.update({
+      where: { id: mintedBadgeId },
+      data: { mintStatus: "PENDING" },
+    });
+    return {
+      transactionHash: `shadow-mode-${Date.now()}`,
+      mintedBadgeId: mintedBadge.id,
+    };
+  }
 
   try {
     const minterAccount = getMinterAccount();

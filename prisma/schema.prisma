@@ -61,6 +61,7 @@ model User {
 
   volunteer     Volunteer?
   etsAdmin      ETSAdmin?
+  merchant      Merchant?
   notifications Notification[]
   certIssuedMints MintedBadge[] @relation("CertIssuerMints")
 
@@ -198,6 +199,7 @@ model ActivityLog {
 
   webhookLog WebhookLog? @relation(fields: [webhookLogId], references: [id])
 
+  @@unique([externalRef])
   @@index([volunteerId])
   @@index([associationId])
   @@index([shiftDate])

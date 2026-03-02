@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { webhookPayloadSchema, type WebhookPayload } from "@/lib/validators";
 import { NotFoundError, ValidationError, ConflictError, AppError } from "@/lib/errors";
+import { isShadowMode } from "@/lib/config";
 import { checkBadgeEligibility } from "./badge.service";
 
 /**
@@ -71,7 +72,8 @@ export async function processShiftWebhook(
     }
 
     // 5. Duplicate detection — use externalRef (referenceId from AppAmbulanza)
-    const existing = await prisma.activityLog.findFirst({
+    //    @@unique([externalRef]) in the schema guarantees no race-condition duplicates.
+    const existing = await prisma.activityLog.findUnique({
       where: { externalRef: data.data.referenceId },
     });
 
@@ -118,13 +120,20 @@ export async function processShiftWebhook(
       data: { status: "PROCESSED", processedAt: new Date() },
     });
 
-    // 8. Fire-and-forget badge eligibility check (do not block the webhook response)
-    checkBadgeEligibility(volunteer.id).catch((err) => {
-      console.error(
-        `[webhook.service] Badge eligibility check failed for volunteer ${volunteer.id}:`,
-        err,
+    // 8. Badge eligibility check — only in active mode
+    //    In shadow mode we log and validate everything but never trigger minting.
+    if (isShadowMode()) {
+      console.info(
+        `[webhook.service] 🌑 SHADOW MODE — skipping badge eligibility for volunteer ${volunteer.id} (shift ${result.id})`,
       );
-    });
+    } else {
+      checkBadgeEligibility(volunteer.id).catch((err) => {
+        console.error(
+          `[webhook.service] Badge eligibility check failed for volunteer ${volunteer.id}:`,
+          err,
+        );
+      });
+    }
 
     return { activityLogId: result.id, volunteerId: volunteer.id };
   } catch (error) {
